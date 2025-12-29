@@ -1,4 +1,10 @@
 import 'package:flutter/material.dart';
+import 'services/radio_service.dart';
+import 'dart:async';
+import 'package:noise_meter/noise_meter.dart';
+
+// Simple waveform UI using microphone input (noise_meter)
+const String agoraAppId = '51ef80a60cca4d878865d3124810d35d';
 
 void main() {
   runApp(const MyApp());
@@ -7,30 +13,27 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
+    const darkBlue = Color(0xFF002B5B);
+
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'F1 Effect Radio',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          primary: darkBlue,
+          secondary: Colors.blueAccent,
+          surface: Color(0xFF121212),
+        ),
+        scaffoldBackgroundColor: Colors.black,
+        floatingActionButtonTheme: const FloatingActionButtonThemeData(
+          backgroundColor: darkBlue,
+          foregroundColor: Colors.white,
+        ),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const MyHomePage(title: 'F1 Effect Radio'),
     );
   }
 }
@@ -38,85 +41,301 @@ class MyApp extends StatelessWidget {
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
   final String title;
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _MyHomePageState extends State<MyHomePage>
+    with SingleTickerProviderStateMixin {
+  final int _counter = 0;
+  late AnimationController _pulseController;
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  RadioService? _radioService;
+  bool _inChannel = false;
+
+  // NoiseMeter for capturing mic input level
+  late NoiseMeter _noiseMeter;
+  StreamSubscription<NoiseReading>? _noiseSubscription;
+  final List<double> _amplitudes = List<double>.filled(60, 0.0, growable: false);
+
+  @override
+  void initState() {
+    super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+      lowerBound: 0,
+      upperBound: 1,
+    );
+    _noiseMeter = NoiseMeter();
+  }
+
+  @override
+  void dispose() {
+    _stopNoiseMonitoring();
+    _noiseSubscription?.cancel();
+    _noiseSubscription = null;
+    _radioService?.dispose();
+    _pulseController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleChannel() async {
+    if (!_inChannel) {
+      // join
+      try {
+        _radioService = await RadioService.create(agoraAppId);
+        await _radioService!.joinChannel(channelId: 'test');
+        // ignore: avoid_print
+        print('UI: joinChannel completed without throwing');
+        // start waveform monitoring
+        _startNoiseMonitoring();
+        if (!mounted) return;
+        setState(() {
+          _inChannel = true;
+        });
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Joined channel')));
+      } catch (e, st) {
+        // Log full error + stacktrace to console for debugging
+        // ignore: avoid_print
+        print('Failed to join channel: $e');
+        // ignore: avoid_print
+        print(st);
+        if (!mounted) return;
+        // Show dialog with error details (short form)
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Failed to join channel'),
+            content: SingleChildScrollView(
+              child: Text('$e\n\nSee console for stack trace.'),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+    } else {
+      // leave
+      try {
+        await _radioService?.leaveChannel();
+        await _radioService?.dispose();
+        _radioService = null;
+        // stop waveform monitoring
+        _stopNoiseMonitoring();
+        if (!mounted) return;
+        setState(() {
+          _inChannel = false;
+        });
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Left channel')));
+      } catch (e, st) {
+        // ignore: avoid_print
+        print('Failed to leave channel: $e');
+        // ignore: avoid_print
+        print(st);
+        if (!mounted) return;
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Failed to leave channel'),
+            content: SingleChildScrollView(child: Text('$e\n\nSee console for stack trace.')),
+            actions: [
+              TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK')),
+            ],
+          ),
+        );
+      }
+    }
+  }
+
+  void _startNoiseMonitoring() {
+    try {
+      _noiseSubscription?.cancel();
+      _noiseSubscription = _noiseMeter.noise.listen((NoiseReading event) {
+        final db = event.meanDecibel;
+        final normalized = ((db + 60) / 60).clamp(0.0, 1.0);
+        setState(() {
+          _amplitudes.removeAt(0);
+          _amplitudes.add(normalized);
+        });
+      }, onError: (err) {
+        // ignore: avoid_print
+        print('NoiseMeter error: $err');
+      });
+    } catch (e) {
+      // ignore: avoid_print
+      print('Failed to start noise monitoring: $e');
+    }
+  }
+
+  void _stopNoiseMonitoring() {
+    try {
+      _noiseSubscription?.cancel();
+      _noiseSubscription = null;
+      setState(() {
+        for (int i = 0; i < _amplitudes.length; i++) {
+          _amplitudes[i] = 0.0;
+        }
+      });
+    } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final darkBlue = Theme.of(context).colorScheme.primary;
+
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
         title: Text(widget.title),
+        backgroundColor: Colors.black,
+        elevation: 0,
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: SafeArea(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            const SizedBox(height: 24),
+            Center(
+              child: Column(
+                children: [
+                  const Text(
+                    'You have pushed the button this many times:',
+                    style: TextStyle(color: Colors.white70),
+                  ),
+                  Text(
+                    '$_counter',
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineMedium
+                        ?.copyWith(color: Colors.white),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_inChannel)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 8.0, horizontal: 16.0),
+                      decoration: BoxDecoration(
+                        color: darkBlue,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: const Text(
+                        'In Channel',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
+                ],
+              ),
             ),
+            const SizedBox(height: 16),
+            // Waveform display
+            SizedBox(
+              height: 120,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                child: CustomPaint(
+                  painter: WaveformPainter(List<double>.from(_amplitudes), color: darkBlue),
+                  child: Container(),
+                ),
+              ),
+            ),
+            const Expanded(child: SizedBox()),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: SizedBox(
+        width: 88,
+        height: 88,
+        child: FloatingActionButton(
+          onPressed: _toggleChannel,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, child) {
+                  final double scale = 1.0 + (_inChannel ? _pulseController.value * 0.35 : 0.0);
+                  return Transform.scale(
+                    scale: scale,
+                    child: Container(
+                      width: 88,
+                      height: 88,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: _inChannel ? darkBlue.withAlpha((0.6 * 255).round()) : Colors.transparent,
+                        boxShadow: [
+                          if (_inChannel)
+                            BoxShadow(
+                              color: darkBlue.withAlpha((0.35 * 255).round()),
+                              blurRadius: 20 * _pulseController.value,
+                              spreadRadius: 1,
+                            ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [Colors.black, darkBlue],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  border: Border.all(color: Colors.white10, width: 1),
+                ),
+                child: Icon(
+                  _inChannel ? Icons.call_end : Icons.call,
+                  color: _inChannel ? Colors.redAccent : Colors.white70,
+                  size: 32,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
+}
+
+// Simple painter that draws a waveform from amplitude samples (0.0 - 1.0)
+class WaveformPainter extends CustomPainter {
+  final List<double> samples;
+  final Color color;
+  WaveformPainter(this.samples, {this.color = Colors.blue});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color.withAlpha((0.9 * 255).round())
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0
+      ..isAntiAlias = true;
+
+    final path = Path();
+    if (samples.isEmpty) return;
+    final dx = size.width / (samples.length - 1);
+    for (int i = 0; i < samples.length; i++) {
+      final x = i * dx;
+      final v = (samples[i].clamp(0.0, 1.0));
+      final y = size.height - (v * size.height);
+      if (i == 0) {
+        path.moveTo(x, y);
+      } else {
+        path.lineTo(x, y);
+      }
+    }
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant WaveformPainter oldDelegate) => true;
 }
