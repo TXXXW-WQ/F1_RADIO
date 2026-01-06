@@ -54,6 +54,12 @@ class _MyHomePageState extends State<MyHomePage> {
   // RecorderController (audio_waveforms) for capturing mic PCM and rendering detailed waveform
   late RecorderController _recorderController;
 
+  // Push-to-talk state
+  bool _pttActive = false;
+
+  // whether recorder is currently recording
+  bool _isRecording = false;
+
   @override
   void initState() {
     super.initState();
@@ -63,7 +69,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void dispose() {
     try {
-      _recorderController.stop(false);
+      if (_isRecording) _recorderController.stop(false);
     } catch (_) {}
     _recorderController.dispose();
     _radioService?.dispose();
@@ -76,12 +82,12 @@ class _MyHomePageState extends State<MyHomePage> {
       try {
         _radioService = await RadioService.create(agoraAppId);
         await _radioService!.joinChannel(channelId: 'test');
-        // start recorder waveform (audio_waveforms)
+        // Do NOT start recorder here. Recorder will run only when PTT pressed.
+        // default mic state: muted until user presses PTT
         try {
-          await _recorderController.record();
+          await _radioService!.setMicEnabled(false);
         } catch (e) {
-          // ignore: avoid_print
-          print('Recorder start failed: $e');
+          // ignore
         }
         if (!mounted) return;
         setState(() {
@@ -109,16 +115,28 @@ class _MyHomePageState extends State<MyHomePage> {
     } else {
       // leave
       try {
+        // ensure mic off
+        try {
+          await _radioService?.setMicEnabled(false);
+        } catch (_) {}
+        // stop recorder if running
+        try {
+          if (_isRecording) {
+            await _recorderController.stop(false);
+            _isRecording = false;
+          }
+        } catch (_) {}
         await _radioService?.leaveChannel();
         await _radioService?.dispose();
         _radioService = null;
-        // stop recorder waveform
+        // stop recorder waveform (redundant but safe)
         try {
-          await _recorderController.stop(false);
+          if (_isRecording) await _recorderController.stop(false);
         } catch (_) {}
         if (!mounted) return;
         setState(() {
           _inChannel = false;
+          _pttActive = false;
         });
       } catch (e, st) {
         // ignore: avoid_print
@@ -140,39 +158,151 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  // When PTT pressed: enable mic and start recorder. When released: disable mic and stop recorder.
+  Future<void> _onPttDown() async {
+    if (!_inChannel) return;
+    setState(() => _pttActive = true);
+    try {
+      await _radioService?.setMicEnabled(true);
+    } catch (e) {
+      // ignore
+    }
+    try {
+      if (!_isRecording) {
+        // debug
+        // ignore: avoid_print
+        print('PTT down: starting recorder');
+        await _recorderController.record();
+        _isRecording = true;
+        // ignore: avoid_print
+        print('PTT down: recorder started');
+      } else {
+        // ignore: avoid_print
+        print('PTT down: recorder already running');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('Recorder start failed on PTT down: $e');
+    }
+  }
+
+  Future<void> _onPttUp() async {
+    if (!_inChannel) return;
+    setState(() => _pttActive = false);
+    try {
+      await _radioService?.setMicEnabled(false);
+    } catch (e) {
+      // ignore
+    }
+    try {
+      if (_isRecording) {
+        // debug
+        // ignore: avoid_print
+        print('PTT up: stopping recorder');
+        await _recorderController.stop(false);
+        _isRecording = false;
+        // ignore: avoid_print
+        print('PTT up: recorder stopped');
+      } else {
+        // ignore: avoid_print
+        print('PTT up: recorder was not running');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('Recorder stop failed on PTT up: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Keep the UI minimal: only waveform and call button
+    // Keep the UI minimal: only waveform and call button; PTT appears when in channel
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-        child: SizedBox(
-          height: 220,
-          width: MediaQuery.of(context).size.width,
-          child: AudioWaveforms(
-            enableGesture: false,
-            size: Size(MediaQuery.of(context).size.width, 220.0),
-            recorderController: _recorderController,
-            waveStyle: WaveStyle(
-              showMiddleLine: false,
-              waveColor: Colors.cyanAccent,
-              showDurationLabel: false,
-              extendWaveform: true,
-              spacing: 8.0, // spacing must be larger than waveThickness
-              waveThickness: 3.5,
-              waveCap: StrokeCap.round,
-              scaleFactor: 80.0, // increase sensitivity / amplification
-              backgroundColor: Colors.black,
-            ),
-          ),
-        ),
+      body: SafeArea(
+        child: _inChannel
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // Waveform placed near the vertical center
+                  SizedBox(
+                    height: 220,
+                    width: MediaQuery.of(context).size.width,
+                    child: AudioWaveforms(
+                      enableGesture: false,
+                      size: Size(MediaQuery.of(context).size.width, 220.0),
+                      recorderController: _recorderController,
+                      // Note: recorder is started only while PTT is pressed; when stopped the widget remains visible but won't change
+                      waveStyle: WaveStyle(
+                        showMiddleLine: false,
+                        waveColor: Colors.cyanAccent,
+                        showDurationLabel: false,
+                        extendWaveform: true,
+                        spacing: 28.0, // spacing must be larger than waveThickness
+                        waveThickness: 12.0,
+                        waveCap: StrokeCap.round,
+                        scaleFactor: 1000.0, // further increase sensitivity / amplification
+                        backgroundColor: Colors.black,
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20), // smaller spacing so both sit near center
+
+                  // Push-to-talk button below the waveform
+                  Center(
+                    child: GestureDetector(
+                      onTapDown: (_) => _onPttDown(),
+                      onTapUp: (_) => _onPttUp(),
+                      onTapCancel: _onPttUp,
+                      child: Container(
+                        width: 140,
+                        height: 140,
+                        decoration: BoxDecoration(
+                          color: _pttActive ? Colors.redAccent : Colors.red,
+                          shape: BoxShape.circle,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Color.fromRGBO(255, 0, 0, 0.4),
+                              blurRadius: 20,
+                              spreadRadius: 4,
+                            ),
+                          ],
+                        ),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.mic,
+                                size: 48,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Push to Talk',
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // keep a little bottom padding so FAB doesn't overlap
+                  const SizedBox(height: 48),
+                ],
+              )
+            : const SizedBox.shrink(),
       ),
+      // Join / Leave button at bottom center
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       floatingActionButton: FloatingActionButton.large(
         onPressed: _toggleChannel,
+        backgroundColor: _inChannel ? Colors.red : const Color(0xFF002B5B),
         child: Icon(
           _inChannel ? Icons.call_end : Icons.call,
-          size: 48,
+          size: 40,
         ),
       ),
     );
