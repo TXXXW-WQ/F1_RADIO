@@ -1,29 +1,70 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:agora_rtc_engine/agora_rtc_engine.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 /// RadioService
 /// - Agora SDK を使って音声チャネルに参加/退出する機能を提供します。
 /// - マイクの ON/OFF 切替、スピーカー音量の調整、スピーカー出力切替をサポートします。
+/// - 加えて、ローカルの音声ファイルを通話チャネルに流す（startAudioMixing）機能を提供します。
 ///
 /// 使い方 (例):
 /// final service = await RadioService.create(appId);
 /// await service.joinChannel(token: token, channelId: 'test');
-/// await service.toggleMic();
-/// await service.setSpeakerVolume(80);
+/// await service.playStartSound(); // assets/sounds/f1_start.m4a を再生して相手に聞かせる
 /// await service.leaveChannel();
 class RadioService {
   late final RtcEngine _engine;
+  final AudioPlayer _audioPlayer = AudioPlayer();
   bool _joined = false;
   bool _micEnabled = true;
   int _playbackVolume = 100; // 0 - 400 (agora SDK の範囲)
+
+  // asset -> device file path cache
+  final Map<String, String> _assetCache = {};
 
   RadioService._();
 
   /// Factory: Agora エンジンを初期化して RadioService インスタンスを返す
   static Future<RadioService> create(String appId) async {
     final s = RadioService._();
+
+    // audioplayers の詳細なログを有効にする
+    await AudioPlayer.global.setLogConfig(logEnabled: true);
+
+    // AudioPlayer のグローバル設定を行い、オーディオフォーカスの競合を解決する
+    await AudioPlayer.global.setAudioContext(AudioContext(
+      android: AudioContextAndroid(
+        isSpeakerphoneOn: true,
+        stayAwake: true,
+        contentType: AndroidContentType.sonification,
+        usageType: AndroidUsageType.assistanceSonification,
+        // gainTransientMayDuck は、他のオーディオを止める代わりに音量を下げることを許可する
+        // これにより、Agora の通話音声との共存が改善される可能性がある
+        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+      ),
+      iOS: AudioContextIOS(
+        category: AVAudioSessionCategory.playAndRecord, // Corrected category
+        options: const {
+          AVAudioSessionOptions.mixWithOthers,
+          AVAudioSessionOptions.defaultToSpeaker,
+        },
+      ),
+    ));
+
+    // AudioPlayer の状態をログに出力してデバッグしやすくする
+    s._audioPlayer.onPlayerStateChanged.listen((state) {
+      // ignore: avoid_print
+      print('[AudioPlayer] State changed: $state');
+    });
+    s._audioPlayer.onLog.listen((msg) {
+      // ignore: avoid_print
+      print('[AudioPlayer] Log: $msg');
+    });
 
     // エンジン作成・初期化
     s._engine = createAgoraRtcEngine();
@@ -134,8 +175,91 @@ class RadioService {
   bool get micEnabled => _micEnabled;
   int get playbackVolume => _playbackVolume;
 
+  /// --- audio mixing helpers ---
+
+  // Ensure an asset (e.g. 'sounds/f1_start.m4a') is copied to a device file and return its path.
+  Future<String> _ensureAssetFile(String assetPath) async {
+    if (_assetCache.containsKey(assetPath)) return _assetCache[assetPath]!;
+    // Load asset bytes
+    final data = await rootBundle.load(assetPath);
+    final bytes = data.buffer.asUint8List();
+    final dir = await getTemporaryDirectory();
+    final fileName = assetPath.split('/').last;
+    final file = File('${dir.path}/$fileName');
+    await file.writeAsBytes(bytes, flush: true);
+    _assetCache[assetPath] = file.path;
+    return file.path;
+  }
+
+  /// Play a local asset into the channel using startAudioMixing.
+  Future<void> _startAudioMixingFromAsset(String assetPath,
+      {bool loop = false, bool loopback = true}) async {
+    final path = await _ensureAssetFile(assetPath);
+    // cycle: 0 -> loop forever, >0 -> number of times
+    final cycle = loop ? 0 : 1;
+    try {
+      // The 'replace' parameter is not available in this version of the Agora SDK.
+      // The default behavior is mixing, which is what we want.
+      await _engine.startAudioMixing(
+          filePath: path, loopback: loopback, cycle: cycle);
+      // ignore: avoid_print
+      print('Started audio mixing for $assetPath -> $path');
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('startAudioMixing failed for $assetPath: $e');
+      // ignore: avoid_print
+      print(st);
+    }
+  }
+
+  /// Stop audio mixing (if playing)
+  Future<void> stopAudioMixing() async {
+    try {
+      await _engine.stopAudioMixing();
+      // ignore: avoid_print
+      print('Stopped audio mixing');
+    } catch (e) {
+      // ignore: avoid_print
+      print('stopAudioMixing failed: $e');
+    }
+  }
+
+  /// Public helpers to play start/end sounds that are included as assets
+  Future<void> playStartSound() async {
+    if (!_joined) return;
+    try {
+      // Play locally for instant feedback from a file path
+      final localPath = await _ensureAssetFile('assets/sounds/f1_start.m4a');
+      await _audioPlayer.play(DeviceFileSource(localPath));
+
+      // Mix into channel for remote users
+      await _startAudioMixingFromAsset('assets/sounds/f1_start.m4a',
+          loop: false, loopback: false); // loopback: false to avoid double playback
+    } catch (e) {
+      // ignore: avoid_print
+      print('playStartSound failed: $e');
+    }
+  }
+
+  Future<void> playEndSound() async {
+    if (!_joined) return;
+    try {
+      // Play locally for instant feedback from a file path
+      final localPath = await _ensureAssetFile('assets/sounds/f1_end.m4a');
+      await _audioPlayer.play(DeviceFileSource(localPath));
+
+      // Mix into channel for remote users
+      await _startAudioMixingFromAsset('assets/sounds/f1_end.m4a',
+          loop: false, loopback: false); // loopback: false to avoid double playback
+    } catch (e) {
+      // ignore: avoid_print
+      print('playEndSound failed: $e');
+    }
+  }
+
   /// リソース解放
   Future<void> dispose() async {
+    await _audioPlayer.dispose();
     try {
       await _engine.release();
     } catch (_) {

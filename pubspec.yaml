@@ -19,6 +19,8 @@ dependencies:
   noise_meter: ^5.0.2
   audio_waveforms: ^2.0.1
   flutter_dotenv: ^5.0.2
+  path_provider: ^2.0.15
+  audioplayers: ^6.5.1
 
 dev_dependencies:
   flutter_test:
@@ -31,4 +33,6 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - assets/sounds/f1_end.m4a
+    - assets/sounds/f1_start.m4a
     - .env
