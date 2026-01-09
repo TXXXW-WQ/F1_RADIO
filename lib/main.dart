@@ -117,6 +117,41 @@ class _MyHomePageState extends State<MyHomePage> {
     return base * (1.0 + anim * 0.9);
   }
 
+  void _showToast(String message, {bool isError = false}) {
+    final overlay = Overlay.of(context);
+    late OverlayEntry overlayEntry;
+
+    overlayEntry = OverlayEntry(
+      builder: (context) => Positioned(
+        top: MediaQuery.of(context).size.height * 0.5 - 50, // 画面の中央に配置
+        left: MediaQuery.of(context).size.width * 0.1,
+        right: MediaQuery.of(context).size.width * 0.1,
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
+            decoration: BoxDecoration(
+              color: (isError ? Colors.red : Colors.black).withAlpha(204),
+              borderRadius: BorderRadius.circular(20.0),
+            ),
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 16.0),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    overlay.insert(overlayEntry);
+
+    // 2秒後にトーストを消す
+    Timer(const Duration(seconds: 2), () {
+      overlayEntry.remove();
+    });
+  }
+
   Future<void> _toggleChannel() async {
     if (_isJoining) return; // 処理中の多重実行を防止
 
@@ -140,9 +175,7 @@ class _MyHomePageState extends State<MyHomePage> {
           _inChannel = true;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('チャンネルに参加しました'), duration: Duration(seconds: 2)),
-        );
+        _showToast('チャンネルに参加しました');
       } catch (e) {
         // ignore: avoid_print
         print('Failed to join channel: $e');
@@ -150,13 +183,7 @@ class _MyHomePageState extends State<MyHomePage> {
         _radioService = null;
 
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('チャンネルに参加できませんでした: ${e.toString()}'),
-            duration: const Duration(seconds: 3),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _showToast('チャンネルに参加できませんでした', isError: true);
       } finally {
         if (mounted) {
           setState(() {
@@ -311,14 +338,7 @@ class _MyHomePageState extends State<MyHomePage> {
                               Switch(
                                 value: _isRadioEffectEnabled,
                                 onChanged: _toggleRadioEffect,
-                                // ✅ activeColorなどの代わりに thumbColor / trackColor を使用
-                                thumbColor: WidgetStateProperty.resolveWith<Color?>((states) {
-                                  if (states.contains(WidgetState.selected)) {
-                                    return Colors.blueAccent; // オン時のつまみの色
-                                  }
-                                  return null; // オフ時はデフォルト
-                                }),
-                                trackOutlineColor: WidgetStateProperty.all(Colors.transparent), // 枠線を消してスッキリさせる場合
+                                activeThumbColor: Colors.blueAccent,
                               ),
                             ],
                           ),
