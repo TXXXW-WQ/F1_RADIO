@@ -64,6 +64,7 @@ class _MyHomePageState extends State<MyHomePage> {
   RadioService? _radioService;
   bool _inChannel = false;
   bool _isJoining = false; // チャンネル参加処理中の状態
+  bool _isRadioEffectEnabled = false; // F1無線エフェクトの状態
 
   late RecorderController _recorderController;
   bool _pttActive = false;
@@ -166,6 +167,7 @@ class _MyHomePageState extends State<MyHomePage> {
     } else {
       // チャンネルから退出する処理
       try {
+        await _radioService?.setRadioEffectEnabled(false);
         await _radioService?.setMicEnabled(false);
         if (_isRecording) {
           await _recorderController.stop(false);
@@ -183,6 +185,7 @@ class _MyHomePageState extends State<MyHomePage> {
         setState(() {
           _inChannel = false;
           _pttActive = false;
+          _isRadioEffectEnabled = false;
         });
       } catch (e) {
         // ignore: avoid_print
@@ -223,6 +226,13 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  Future<void> _toggleRadioEffect(bool enabled) async {
+    setState(() {
+      _isRadioEffectEnabled = enabled;
+    });
+    await _radioService?.setRadioEffectEnabled(enabled);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -235,7 +245,7 @@ class _MyHomePageState extends State<MyHomePage> {
                   ? // 参加後は PTT と Wave を表示
                   Column(
                       mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
+                      children: <Widget>[
                         SizedBox(
                           height: 190,
                           width: MediaQuery.of(context).size.width,
@@ -287,6 +297,30 @@ class _MyHomePageState extends State<MyHomePage> {
                                 ],
                               ),
                             ),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        // F1 Radio Effect Switch
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Text('F1 Radio Effect', style: TextStyle(fontSize: 16)),
+                              const SizedBox(width: 10),
+                              Switch(
+                                value: _isRadioEffectEnabled,
+                                onChanged: _toggleRadioEffect,
+                                // ✅ activeColorなどの代わりに thumbColor / trackColor を使用
+                                thumbColor: WidgetStateProperty.resolveWith<Color?>((states) {
+                                  if (states.contains(WidgetState.selected)) {
+                                    return Colors.blueAccent; // オン時のつまみの色
+                                  }
+                                  return null; // オフ時はデフォルト
+                                }),
+                                trackOutlineColor: WidgetStateProperty.all(Colors.transparent), // 枠線を消してスッキリさせる場合
+                              ),
+                            ],
                           ),
                         ),
                       ],

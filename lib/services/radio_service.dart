@@ -172,6 +172,19 @@ class RadioService {
   bool get micEnabled => _micEnabled;
   int get playbackVolume => _playbackVolume;
 
+  /// --- audio effect helpers ---
+
+  /// F1無線エフェクトを有効/無効にします
+  Future<void> setRadioEffectEnabled(bool enabled) async {
+    if (enabled) {
+      // 蓄音機プリセットで、古い無線のような音質をシミュレート
+      await _engine.setAudioEffectPreset(AudioEffectPreset.roomAcousticsPhonograph);
+    } else {
+      // エフェクトをオフにする
+      await _engine.setAudioEffectPreset(AudioEffectPreset.audioEffectOff);
+    }
+  }
+
   /// --- audio mixing helpers ---
 
   // Ensure an asset (e.g. 'sounds/f1_start.m4a') is copied to a device file and return its path.
