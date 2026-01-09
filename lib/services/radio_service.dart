@@ -33,9 +33,6 @@ class RadioService {
   static Future<RadioService> create(String appId) async {
     final s = RadioService._();
 
-    // audioplayers の詳細なログを有効にする
-    await AudioPlayer.global.setLogConfig(logEnabled: true);
-
     // AudioPlayer のグローバル設定を行い、オーディオフォーカスの競合を解決する
     await AudioPlayer.global.setAudioContext(AudioContext(
       android: AudioContextAndroid(
@@ -228,9 +225,8 @@ class RadioService {
   Future<void> playStartSound() async {
     if (!_joined) return;
     try {
-      // Play locally for instant feedback from a file path
-      final localPath = await _ensureAssetFile('assets/sounds/f1_start.m4a');
-      await _audioPlayer.play(DeviceFileSource(localPath));
+      // Play locally for instant feedback using AssetSource for simplicity and reliability
+      await _audioPlayer.play(AssetSource('sounds/f1_start.m4a'));
 
       // Mix into channel for remote users
       await _startAudioMixingFromAsset('assets/sounds/f1_start.m4a',
@@ -244,9 +240,8 @@ class RadioService {
   Future<void> playEndSound() async {
     if (!_joined) return;
     try {
-      // Play locally for instant feedback from a file path
-      final localPath = await _ensureAssetFile('assets/sounds/f1_end.m4a');
-      await _audioPlayer.play(DeviceFileSource(localPath));
+      // Play locally for instant feedback using AssetSource for simplicity and reliability
+      await _audioPlayer.play(AssetSource('sounds/f1_end.m4a'));
 
       // Mix into channel for remote users
       await _startAudioMixingFromAsset('assets/sounds/f1_end.m4a',

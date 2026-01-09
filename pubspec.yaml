@@ -33,6 +33,5 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/sounds/f1_end.m4a
-    - assets/sounds/f1_start.m4a
+    - assets/sounds/
     - .env
